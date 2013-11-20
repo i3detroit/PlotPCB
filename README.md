@@ -10,3 +10,4 @@ Requirements
 
 * [EAGLE](http://cadsoftusa.com)
 * [PCB-GCODE](http://www.pcbgcode.org/)
+* [PySerial](http://pyserial.sourceforge.net/)
