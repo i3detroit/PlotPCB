@@ -124,9 +124,9 @@ def parse_z(gcode,drill):
 def parse_tool_change(gcode):
     '''Parse a tool-change command'''
     global spindle_speed
-    newtool = re.match("M06 T([0-9]*) (\(.*\)).*", gcode)
+    newtool = re.match("M06 T([0-9]*) \((.*)\).*", gcode)
     hpgl = 'OC;!RM0;!CC;!EM0;PA0,0;'+\
-           '\nCO "%s toolchange"'%newtool.group(1).strip()+\
+           '\nCO "insert tool %s: size '%newtool.group(1).strip() + newtool.group(2).strip() + '"' +\
            '\nOC;!RM%d;!CC;!EM1;'%spindle_speed
     return hpgl
 
@@ -255,24 +255,27 @@ def main():
 
     #### Serial output (machine control) ####
     if args.save_hpgl == '$$$$TEMP$$$$':
-    	ser = serial.Serial(args.port,args.baud,rtscts=True,timeout=1)
-	queued = 0
+        ser = serial.Serial(args.port,args.baud,rtscts=True,timeout=1)
+        queued = 0
         hpgl_file.seek(0, 0)
-	for line in hpgl_file:
-	    for command in line.split(";"):
-	        comment = re.match("CO \"(.*)\"", command)
-		if comment:
-		    print(colored(comment.group(1), 'magenta'))
-		    raw_input()
-		else:
-	            ser.write(command + ";")
-		    queued += 1
-	            if queued >= serial_queue:
-		        read_byte = ser.read(1)
-			if read_byte:
-			    queued -= 1
-		            sys.stdout.write(colored(read_byte, 'green')) #block and show response for debugging
-
+        for line in hpgl_file:
+            print(line.strip())
+            for command in line.split(";"):
+                comment = re.match("CO \"(.*)\"", command)
+                if comment:
+                    print(colored(comment.group(1), 'magenta'))
+                    raw_input()
+                else:
+                    ser.write(command + ";")
+                    queued += 1
+                    if queued >= serial_queue:
+                        while ser.inWaiting():
+                            read_byte = ser.read(1)
+                            sys.stdout.write(colored(read_byte, 'green')) #block and show response for debugging
+                            if read_byte == '\r':
+                                queued -= 1
+        print('Wait until plotter finishes and press enter to exit')
+	raw_input()
     #### End Machine control ####
 
 if __name__ == '__main__':
