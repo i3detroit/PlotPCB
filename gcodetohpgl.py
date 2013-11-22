@@ -3,11 +3,13 @@
 import sys
 import re
 import serial
+import io
 from tempfile import SpooledTemporaryFile as sptf
 from argparse import ArgumentParser
 from glob import glob
 from os.path import join
 from termcolor import colored, cprint
+from time import sleep
 
 #### Machine configuration ####
 # default units for moves are inches
@@ -31,13 +33,13 @@ yoff = 102.5/25.4
 mill_feed = 12000
 
 # spindle speed in krpm [0..32]
-spindle_speed = 0
+spindle_speed = 32
 
 # time to wait, in ms, for a drill to complete
 drill_dwell = 700
 
 # number of HPGL commands to buffer before waiting
-serial_queue = 8
+serial_queue = 1
 
 #### End machine details ####
 
@@ -125,9 +127,9 @@ def parse_tool_change(gcode):
     '''Parse a tool-change command'''
     global spindle_speed
     newtool = re.match("M06 T([0-9]*) \((.*)\).*", gcode)
-    hpgl = 'OC;!RM0;!CC;!EM0;PA0,0;'+\
+    hpgl = '!OC;!RM0;!CC;!EM0;PA0,0;'+\
            '\nCO "insert tool %s: size '%newtool.group(1).strip() + newtool.group(2).strip() + '"' +\
-           '\nOC;!RM%d;!CC;!EM1;'%spindle_speed
+           '\n!OC;!RM%d;!CC;!EM1;'%spindle_speed
     return hpgl
 
 def parse_line(line,drill):
@@ -236,7 +238,7 @@ def main():
         print '%s Drills %s'%('='*36,'='*36)
         number = 0
     
-        hpgl_file.write('VS%d;!OC;!SV140;!SM32;!WR0,8,8;!CC;!CM1;!EM1;!OC;!RM%d;!CC;!CT1;'%(mill_feed,spindle_speed))
+        hpgl_file.write('IN;!CT1;VS%d;!OC;!SV140;!SM32;!WR0,8,8;!CC;!CM1;!EM1;!OC;!RM%d;!CC;'%(mill_feed,spindle_speed))
     
         for line in f:
             line = line.strip()
@@ -249,33 +251,45 @@ def main():
             hpgl_file.write(hpgl)
         print '%s End Drills %s'%('='*34,'='*34)
 
-    hpgl_file.write(';!RM0;!CC;PU;!EM0;PA0,0;')
+    hpgl_file.write('!OC;!RM0;!CC;PU;!EM0;PA0,0;')
 
     #### End HPGL generation ####
 
     #### Serial output (machine control) ####
     if args.save_hpgl == '$$$$TEMP$$$$':
-        ser = serial.Serial(args.port,args.baud,rtscts=True,timeout=1)
+        ser = serial.Serial(args.port,args.baud,rtscts=True)
+        ser.read(ser.inWaiting())
         queued = 0
         hpgl_file.seek(0, 0)
-        for line in hpgl_file:
-            print(line.strip())
+        for line in hpgl_file.read().split('\n'):
+            print repr(line.strip())
             for command in line.split(";"):
-                comment = re.match("CO \"(.*)\"", command)
-                if comment:
-                    print(colored(comment.group(1), 'magenta'))
-                    raw_input()
-                else:
-                    ser.write(command + ";")
-                    queued += 1
-                    if queued >= serial_queue:
-                        while ser.inWaiting():
-                            read_byte = ser.read(1)
-                            sys.stdout.write(colored(read_byte, 'green')) #block and show response for debugging
-                            if read_byte == '\r':
-                                queued -= 1
+            	if command:
+                    comment = re.match("CO \"(.*)\"", command)
+                    if comment:
+                        raw_input(colored(comment.group(1), 'magenta'))
+                    elif 'RM' in command:
+                        ser.write(command  + ';')
+                        while ser.inWaiting() == 0:
+                            sleep(0.01)
+                        code = ser.read(ser.inWaiting())
+                        match = True
+                        while match:
+                            print code
+                            ser.write(command  + ';')
+                            while ser.inWaiting() == 0:
+                                sleep(0.01)
+                            newcode = ser.read(ser.inWaiting())
+                            match = (code == newcode)
+                    else:
+                        ser.write(command + ";")
+                        queued += 1
+                        if command not in ('!OC','!WR0,8,8'):
+                            while ser.inWaiting() == 0:
+                                sleep(1)
+                        print colored(command, 'red'),colored('%r'%ser.read(ser.inWaiting()),'yellow')
         print('Wait until plotter finishes and press enter to exit')
-	raw_input()
+        raw_input()
     #### End Machine control ####
 
 if __name__ == '__main__':
