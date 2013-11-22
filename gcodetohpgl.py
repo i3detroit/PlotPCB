@@ -7,6 +7,7 @@ from tempfile import SpooledTemporaryFile as sptf
 from argparse import ArgumentParser
 from glob import glob
 from os.path import join
+from termcolor import colored, cprint
 
 #### Machine configuration ####
 # default units for moves are inches
@@ -30,10 +31,13 @@ yoff = 102.5/25.4
 mill_feed = 12000
 
 # spindle speed in krpm [0..32]
-spindle_speed = 32
+spindle_speed = 0
 
 # time to wait, in ms, for a drill to complete
 drill_dwell = 700
+
+# number of HPGL commands to buffer before waiting
+serial_queue = 8
 
 #### End machine details ####
 
@@ -232,7 +236,7 @@ def main():
         print '%s Drills %s'%('='*36,'='*36)
         number = 0
     
-        hpgl_file.write('VS%d;!OC;!SV140;!SM32;!WR0,8,8;!CC;!CM1;!EM1;!OC;!RM%d;!CC;'%(mill_feed,spindle_speed))
+        hpgl_file.write('VS%d;!OC;!SV140;!SM32;!WR0,8,8;!CC;!CM1;!EM1;!OC;!RM%d;!CC;!CT1;'%(mill_feed,spindle_speed))
     
         for line in f:
             line = line.strip()
@@ -250,7 +254,24 @@ def main():
     #### End HPGL generation ####
 
     #### Serial output (machine control) ####
-    #ser = serial.Serial(args.port,args.baud,rtscts=True)
+    if args.save_hpgl == '$$$$TEMP$$$$':
+    	ser = serial.Serial(args.port,args.baud,rtscts=True,timeout=1)
+	queued = 0
+        hpgl_file.seek(0, 0)
+	for line in hpgl_file:
+	    for command in line.split(";"):
+	        comment = re.match("CO \"(.*)\"", command)
+		if comment:
+		    print(colored(comment.group(1), 'magenta'))
+		    raw_input()
+		else:
+	            ser.write(command + ";")
+		    queued += 1
+	            if queued >= serial_queue:
+		        read_byte = ser.read(1)
+			if read_byte:
+			    queued -= 1
+		            sys.stdout.write(colored(read_byte, 'green')) #block and show response for debugging
 
     #### End Machine control ####
 
