@@ -199,18 +199,11 @@ def tool_change(hpgl):
 def send_cmd(ser,hpgl,wait=0.01):
     '''Send a command and wait for the response from the machine'''
     ser.write(hpgl + ";")
-    if hpgl not in ('!OC','!WR0,8,8'):
-        while ser.inWaiting() == 0:
-            sleep(wait)
-        c = ser.read(ser.inWaiting())
+    c = ser.read(128)
+    if 'E' in c:
+        cprint('%s\t%s'%(hpgl,c),'red',file=sys.stderr)
     else:
-        c = ''
-    if 'IN' == hpgl:
-        while 'Z' not in c:
-            while ser.inWaiting() == 0:                                             
-                sleep(wait)
-            c = ser.read(ser.inWaiting()).strip()
-    print '%s\t%s'%(hpgl,c)
+        cprint('%s\t%s'%(hpgl,c),'white',file=sys.stdout)
 
 #### End control functions ####
 
@@ -365,7 +358,7 @@ def main():
     #### Serial output (machine control) ####
     print '%s Start RS-232 Control %s'%('-'*29,'-'*29)
     if not args.dry:
-        ser = serial.Serial(args.port,args.baud,rtscts=True)
+        ser = serial.Serial(args.port,args.baud,rtscts=True,timeout=0.01)
         
         # discard anything in the input buffer before starting
         ser.read(ser.inWaiting())
