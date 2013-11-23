@@ -134,9 +134,13 @@ def parse_dwell(line):
 
 def parse_tool_change(gcode):
     '''Parse a tool-change command'''
+    global drill_dwell
     newtool = re.match("M06 T([0-9]*) \((.*)\).*", gcode)
-    hpgl = '\nCO "Insert tool #%s: size %s"\n'\
-                %(newtool.group(1).strip(),newtool.group(2).strip())
+    tool = newtool.group(1).strip()
+    size = newtool.group(2).strip()
+    hpgl = 'PA0,0;\nCO "Insert tool #%s: size %s"\n'%(tool,size)
+    if size not in ('routing','milling'):
+        drill_dwell = 20*float(size)
     return hpgl
 
 def parse_spindle(start):
@@ -145,7 +149,7 @@ def parse_spindle(start):
     if start:
         return '!OC;!RM%d;!CC;!EM1;'%spindle_speed
     else:
-        return '!OC;!RM0;!CC;!EM0;PA0,0;'
+        return '!OC;!RM0;!CC;!EM0;'
 
 def parse_line(line,drill):
     '''Parse a line of GCODE'''
@@ -190,15 +194,23 @@ def parse_line(line,drill):
 def tool_change(hpgl):
     '''Change tools'''
     drill = hpgl[hpgl.find('"')+1:hpgl.rfind('"')]
-    raw_input('%s\nPress enter when done.'%drill)
+    raw_input(colored('%s\nPress enter when done.'%drill,'cyan'))
 
-def send_cmd(hpgl,wait=0.01):
+def send_cmd(ser,hpgl,wait=0.01):
     '''Send a command and wait for the response from the machine'''
     ser.write(hpgl + ";")
     if hpgl not in ('!OC','!WR0,8,8'):
         while ser.inWaiting() == 0:
             sleep(wait)
-    print '%s\t%s'%(hpgl,ser.read(ser.inWaiting()))
+        c = ser.read(ser.inWaiting())
+    else:
+        c = ''
+    if 'IN' == hpgl:
+        while 'Z' not in c:
+            while ser.inWaiting() == 0:                                             
+                sleep(wait)
+            c = ser.read(ser.inWaiting()).strip()
+    print '%s\t%s'%(hpgl,c)
 
 #### End control functions ####
 
@@ -240,9 +252,12 @@ def main():
         sys.stderr.write('Multiple drill files selected, too confusing!\n\t')
         sys.stderr.write('\n\t'.join(drills) + '\n')
         sys.exit(10)
-    
-    layer = drills[0][-11:-8]
-    olayer = ('top','bot')[layer == 'top']
+    if drills: 
+        layer = drills[0][-11:-8]
+        olayer = ('top','bot')[layer == 'top']
+    else:
+        layer = 'top'
+        olayer = 'bot'
     
     print 'Using layer %s as first layer based on drill file.'%layer 
     print 'Machine is on %s at %dbaud'%(args.port,args.baud)
@@ -251,6 +266,13 @@ def main():
     print 'Board offset is X=%.6f%s, Y=%.6f%s, max bed is X=%.2f%s, Y=%.2f%s'\
             %(xoff,units,yoff,units,xmax/calfactor,units,ymax/calfactor,units)
     print 'Board will be milled in %s mode and use %s as units'%(mode,units)
+    if not mills:
+        print colored('No milling layer present.','yellow')
+    if not drills:
+        print colored('No drilling layer present.','yellow')
+    if not routes:
+        print colored('No routing layer present.','yellow')
+
     
     # determine if we need a temp file or a real one
     hpgl_file = None
@@ -261,74 +283,87 @@ def main():
         hpgl_file = open(args.save_hpgl,'w+b')
         print 'Producing HPGL output in %s'%args.save_hpgl
 
-    hpgl_file.write('IN;!CT1;VS%d;!OC;!SV140;!SM32;!WR0,8,8;!CC;!CM1;'
-                    '!EM1;!OC;!RM%d;!CC;'%(mill_feed,spindle_speed))
+    hpgl_file.write('IN;!CT1;VS%d;!OC;!SV140;!SM32;!WR0,8,8;!CC;!CM1;'\
+                        %(mill_feed))
     number = 0
     # drills first
-    with open(drills[0]) as f:
-        print '%s Drills %s'%('='*36,'='*36)
-        for line in f:
-            line = line.strip()
-            if line.startswith('('):
-                #comment
-                continue
-            hpgl = parse_line(line,drill=True)
-            number += 1
-            print '%d\t%s\t%s%s'%(number,line,('','\t')[len(line)<16],hpgl)
-            hpgl_file.write(hpgl)
-        print '%s End Drills %s'%('='*34,'='*34)
-
-    parse_tool_change('M06 T98 (routing )')
-
+    if drills:
+        with open(drills[0]) as f:
+            print '%s Drills %s'%('='*36,'='*36)
+            for line in f:
+                line = line.strip()
+                if line.startswith('('):
+                    #comment
+                    continue
+                hpgl = parse_line(line,drill=True)
+                number += 1
+                print
+                '%d\t%s\t\t%s%s'%(number,line,('','\t')[len(line)<16],
+                                hpgl.strip())
+                hpgl_file.write(hpgl)
+            print '%s End Drills %s'%('='*34,'='*34)
+    
     # routing on the drill layer next
-    with open([f for f in routes if layer in f][0]) as f:
-        print '%s %s Traces %s'%('='*34,layer,'='*34)
-        for line in f:
-            line = line.strip()
-            if line.startswith('('):
-                #comment
-                continue
-            hpgl = parse_line(line,drill=False)
-            number += 1
-            print '%d\t%s\t%s%s'%(number,line,('','\t')[len(line)<16],hpgl)
-            hpgl_file.write(hpgl)
-        print '%s End %s Traces %s'%('='*32,layer,'='*32)
+    if routes:
+        with open([f for f in routes if layer in f][0]) as f:
+            print '%s %s Traces %s'%('='*34,layer,'='*34)
+            hpgl_file.write(parse_tool_change('M06 T98 (routing )'))
+            for line in f:
+                line = line.strip()
+                if line.startswith('('):
+                    #comment
+                    continue
+                hpgl = parse_line(line,drill=False)
+                number += 1
+                print '%d\t%s\t\t%s%s'%(number,line,('','\t')[len(line)<16],
+                                      hpgl.strip())
+                hpgl_file.write(hpgl)
+            print '%s End %s Traces %s'%('='*32,layer,'='*32)
+
+    hpgl_file.write(parse_spindle(start=False))
+    hpgl_file.write('PU;PA%s,%s;'%(xmax,0))
+    hpgl_file.write('\nCO "Please flip board."\n')
 
     # routing on other layer
-    with open([f for f in routes if olayer in f][0]) as f:
-        print '%s %s Traces %s'%('='*34,olayer,'='*34)
-        for line in f:
-            line = line.strip()
-            if line.startswith('('):
-                #comment
-                continue
-            hpgl = parse_line(line,drill=False)
-            number += 1
-            print '%d\t%s\t\t%s%s'%(number,line,('','\t')[len(line)<16],hpgl)
-            hpgl_file.write(hpgl)
-        print '%s End %s Traces %s'%('='*32,olayer,'='*32)
-    
-    parse_tool_change('M06 T99 (milling )')
+    if len(routes) > 1:
+        with open([f for f in routes if olayer in f][0]) as f:
+            print '%s %s Traces %s'%('='*34,olayer,'='*34)
+            for line in f:
+                line = line.strip()
+                if line.startswith('('):
+                    #comment
+                    continue
+                hpgl = parse_line(line,drill=False)
+                number += 1
+                print '%d\t%s\t\t%s%s'%(number,line,('','\t')[len(line)<16],
+                                        hpgl.strip())
+                hpgl_file.write(hpgl)
+            print '%s End %s Traces %s'%('='*32,olayer,'='*32)
     
     # milling layer last
-    with open([f for f in mills if olayer in f][0]) as f:
-        print '%s %s Traces %s'%('='*34,layer,'='*34)
-        for line in f:
-            line = line.strip()
-            if line.startswith('('):
-                #comment
-                continue
-            hpgl = parse_line(line,drill=False)
-            number += 1
-            print '%d\t%s\t%s%s'%(number,line,('','\t')[len(line)<16],hpgl)
-            hpgl_file.write(hpgl)
-        print '%s End %s Traces %s'%('='*32,layer,'='*32)
+    if mills:
+        with open([f for f in mills if olayer in f][0]) as f:
+            hpgl_file.write(parse_tool_change('M06 T99 (milling )'))
+            print '%s %s Traces %s'%('='*34,layer,'='*34)
+            for line in f:
+                line = line.strip()
+                if line.startswith('('):
+                    #comment
+                    continue
+                hpgl = parse_line(line,drill=False)
+                number += 1
+                print '%d\t%s\t\t%s%s'%(number,line,('','\t')[len(line)<16],
+                                        hpgl.strip())
+                hpgl_file.write(hpgl)
+            print '%s End %s Traces %s'%('='*32,layer,'='*32)
 
-    hpgl_file.write('!OC;!RM0;!CC;PU;!EM0;PA0,0;')
+    hpgl_file.write('!OC;!RM0;!CC;PU;!EM0;PA%s,%s;'%(xmax,0))
 
+    print '%s End GCODE Processing %s'%('-'*29,'-'*29)
     #### End HPGL generation ####
 
     #### Serial output (machine control) ####
+    print '%s Start RS-232 Control %s'%('-'*29,'-'*29)
     if not args.dry:
         ser = serial.Serial(args.port,args.baud,rtscts=True)
         
@@ -336,17 +371,22 @@ def main():
         ser.read(ser.inWaiting())
         hpgl_file.seek(0, 0)
         for line in hpgl_file.read().split('\n'):
-            print repr(line.strip())
+            print colored(repr(line.strip()),'green')
             for command in line.split(";"):
             	if command:
                     if command.startswith('CO'):
-                        if 'toolchange' in command:
+                        if 'tool' in command:
                             tool_change(command)
+                        elif 'flip' in command:
+                            raw_input(colored('Please flip board.\nPress Enter'
+                                              ' when ready.','cyan'))
                     else:
-                        send_cmd(command)
-        raw_input('Wait until plotter finishes and press enter to exit')
+                        send_cmd(ser,command)
+        raw_input(colored('Wait until plotter finishes and press enter to'
+                          ' exit','cyan'))
     else:
         print colored('Machine control disabled, dry run!', 'yellow')
+    print '%s End RS-232 Control %s'%('-'*30,'-'*30)
     #### End Machine control ####
 
 if __name__ == '__main__':

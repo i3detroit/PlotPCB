@@ -39,3 +39,6 @@ nosetests.xml
 *.g
 *.hpgl
 *.plt
+
+# vim backup files
+*.swp
